@@ -25,7 +25,7 @@ La portada abre en `http://127.0.0.1:8000`. Sin los valores de `.env`, el backen
 
 ## Configuración de Supabase
 
-Crear el proyecto nuevo `pomodoro-matias` en la misma cuenta, sin seleccionar ni reutilizar `control-diego`. Aplicar la migración `001_pomodoro_sessions.sql` solo en el proyecto nuevo. Deshabilitar el alta pública de usuarios y el acceso anónimo. Crear o invitar únicamente al usuario autorizado; `signInWithOtp` usa `shouldCreateUser=false`. Configurar en el backend `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `DATABASE_URL` (pooler compartido en modo transacción) y `POMODORO_ALLOWED_USER_ID`.
+Crear el proyecto nuevo `pomodoro-matias` en la misma cuenta, sin seleccionar ni reutilizar `control-diego`. Aplicar la migración `001_pomodoro_sessions.sql` solo en el proyecto nuevo. Deshabilitar el alta pública de usuarios y el acceso anónimo. Crear o invitar únicamente al usuario autorizado; `signInWithOtp` usa `shouldCreateUser=false`. Configurar `SUPABASE_URL`, `SUPABASE_ANON_KEY` (clave publicable) y `POMODORO_ALLOWED_USER_ID`. FastAPI usa PostgREST con el JWT del usuario y RLS; nunca requiere clave service-role ni contraseña PostgreSQL.
 
 La clave anon/publishable que la aplicación entrega al navegador es pública por diseño; RLS la limita al propietario. La URL de PostgreSQL y el UUID de propietario son variables del backend y no se devuelven al navegador. FastAPI verifica el JWT de Supabase y acepta solamente el UUID configurado. Cada consulta SQL filtra además por ese UUID.
 

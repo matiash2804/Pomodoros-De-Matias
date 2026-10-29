@@ -59,38 +59,15 @@ def main() -> None:
     script = f"""-- PRIVATE: contains Matias's personal study history. Never commit or share publicly.
 -- Run only in the new, independent pomodoro-matias Supabase project.
 -- Replace the UUID marker with the sole authorized Supabase Auth user ID first.
-begin;
-create temporary table _pomodoro_owner (user_id uuid) on commit drop;
-insert into _pomodoro_owner values ('REPLACE_WITH_AUTH_USER_UUID'::uuid);
-create temporary table _pomodoro_seed (
-  id_estudio text, fecha date, materia text, cantidad integer, tiempo integer
-) on commit drop;
-insert into _pomodoro_seed (id_estudio, fecha, materia, cantidad, tiempo) values
-{values};
-do $$
-declare owner_id uuid; before_count integer; foreign_count integer; changed integer;
-begin
-  select user_id into strict owner_id from _pomodoro_owner;
-  select count(*) into before_count from _pomodoro_seed s
-    join public.pomodoro_sessions p on p.id_estudio=s.id_estudio and p.user_id=owner_id;
-  select count(*) into foreign_count from _pomodoro_seed s
-    join public.pomodoro_sessions p on p.id_estudio=s.id_estudio and p.user_id<>owner_id;
-  insert into public.pomodoro_sessions (id_estudio,user_id,fecha,materia,cantidad,tiempo)
-    select id_estudio,owner_id,fecha,materia,cantidad,tiempo from _pomodoro_seed
-    on conflict (id_estudio) do update set fecha=excluded.fecha,materia=excluded.materia,
-      cantidad=excluded.cantidad,tiempo=excluded.tiempo,updated_at=now()
-    where public.pomodoro_sessions.user_id=excluded.user_id;
-  get diagnostics changed = row_count;
-  raise notice 'Importados: %, actualizados: %, rechazados por conflicto de propietario: %',
-    changed-before_count, before_count, foreign_count;
-end $$;
-select count(*) as sesiones, coalesce(sum(total_minutos),0) as total_minutos,
-       coalesce(sum(cantidad),0) as ciclos
-from public.pomodoro_sessions where user_id=(select user_id from _pomodoro_owner);
-select materia, sum(total_minutos) as total_minutos, count(*) as sesiones
-from public.pomodoro_sessions where user_id=(select user_id from _pomodoro_owner)
-group by materia order by total_minutos desc;
-commit;
+-- This single INSERT is safe to rerun: matching IDs are updated, foreign-owner IDs are untouched.
+insert into public.pomodoro_sessions (id_estudio,user_id,fecha,materia,cantidad,tiempo)
+select seed.id_estudio, 'REPLACE_WITH_AUTH_USER_UUID'::uuid, seed.fecha, seed.materia, seed.cantidad, seed.tiempo
+from (values
+{values}
+) as seed(id_estudio,fecha,materia,cantidad,tiempo)
+on conflict (id_estudio) do update set fecha=excluded.fecha,materia=excluded.materia,
+  cantidad=excluded.cantidad,tiempo=excluded.tiempo,updated_at=now()
+where public.pomodoro_sessions.user_id=excluded.user_id;
 """
     OUTPUT.write_text(script, encoding="utf-8")
     print(f"rows={len(rows)} minutes={total} hours={total // 60} remainder={total % 60}")
