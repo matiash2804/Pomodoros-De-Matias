@@ -39,22 +39,37 @@ class ApiGuardTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(server.app)
 
-    def test_sessions_require_a_bearer_token(self):
+    def test_sessions_require_private_cookie(self):
         response = self.client.get("/api/sessions")
         self.assertEqual(response.status_code, 401)
 
-    def test_public_config_does_not_expose_database_credentials(self):
-        with patch.dict("os.environ", {"DATABASE_URL": "postgresql://private"}, clear=False):
-            response = self.client.get("/api/config")
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("DATABASE_URL", response.json())
-        self.assertNotIn("private", response.text)
+    def test_password_login_sets_secure_persistent_cookie_without_otp(self):
+        env = {"POMODORO_ACCESS_PASSWORD": "test-access-password", "POMODORO_SESSION_SECRET": "x" * 48,
+               "POMODORO_ALLOWED_USER_ID": "9b3095b1-d97e-47b4-80be-79325b8f77cb"}
+        with patch.dict("os.environ", env, clear=False):
+            https_client = TestClient(server.app, base_url="https://pomodoro.test")
+            response = https_client.post("/api/auth/login", json={"password": "test-access-password"})
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()["authenticated"])
+            cookie = response.headers["set-cookie"].lower()
+            self.assertIn("httponly", cookie)
+            self.assertIn("secure", cookie)
+            self.assertIn("samesite=strict", cookie)
+            self.assertIn("max-age=2592000", cookie)
+            self.assertEqual(https_client.get("/api/auth/session").json(), {"authenticated": True})
 
-    def test_sessions_fail_closed_until_owner_is_configured(self):
-        headers = {"Authorization": "Bearer deliberately.invalid.token"}
-        with patch.dict("os.environ", {"SUPABASE_URL": "https://example.supabase.co", "POMODORO_ALLOWED_USER_ID": ""}, clear=False):
-            response = self.client.get("/api/sessions", headers=headers)
-        self.assertEqual(response.status_code, 503)
+    def test_login_rejects_cross_origin_requests(self):
+        env = {"POMODORO_ACCESS_PASSWORD": "test-access-password", "POMODORO_SESSION_SECRET": "x" * 48,
+               "POMODORO_ALLOWED_USER_ID": "9b3095b1-d97e-47b4-80be-79325b8f77cb"}
+        with patch.dict("os.environ", env, clear=False):
+            response = self.client.post("/api/auth/login", json={"password": "test-access-password"},
+                                        headers={"Origin": "https://attacker.example"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_wrong_password_is_rejected(self):
+        with patch.dict("os.environ", {"POMODORO_ACCESS_PASSWORD": "correct", "POMODORO_SESSION_SECRET": "x" * 48,
+                                        "POMODORO_ALLOWED_USER_ID": "9b3095b1-d97e-47b4-80be-79325b8f77cb"}, clear=False):
+            self.assertEqual(self.client.post("/api/auth/login", json={"password": "wrong"}).status_code, 401)
 
     def test_frontend_and_pwa_resources_are_served(self):
         self.assertEqual(self.client.get("/").status_code, 200)
@@ -105,13 +120,16 @@ class FakeConnection:
 class CrudRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(server.app)
-        server.app.dependency_overrides[server.current_user] = lambda: "9b3095b1-d97e-47b4-80be-79325b8f77cb"
+        self.env_patch = patch.dict("os.environ", {"POMODORO_ACCESS_PASSWORD": "test-access-password",
+             "POMODORO_SESSION_SECRET": "x" * 48, "POMODORO_ALLOWED_USER_ID": "9b3095b1-d97e-47b4-80be-79325b8f77cb"}, clear=False)
+        self.env_patch.start()
+        self.client.post("/api/auth/login", json={"password": "test-access-password"})
         self.db_patch = patch("server.db_connection", return_value=FakeConnection())
         self.db_patch.start()
 
     def tearDown(self):
         self.db_patch.stop()
-        server.app.dependency_overrides.clear()
+        self.env_patch.stop()
 
     def test_create_update_delete_and_export(self):
         payload = {"fecha": "2026-01-02", "materia": "Cálculo 1", "cantidad": 2, "tiempo": 25}
@@ -126,6 +144,12 @@ class CrudRouteTests(unittest.TestCase):
         xlsx = self.client.get("/api/export/xlsx")
         self.assertEqual(xlsx.status_code, 200)
         self.assertTrue(xlsx.content.startswith(b"PK"))
+
+    def test_logout_clears_session(self):
+        response = self.client.post("/api/auth/logout")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get("/api/auth/session").json(), {"authenticated": False})
+        self.assertEqual(self.client.get("/api/sessions").status_code, 401)
 
 
 if __name__ == "__main__":

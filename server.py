@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import csv
+import base64
+import hashlib
+import hmac
 import io
+import json
 import os
 import re
+import time
 import uuid
 from datetime import date, datetime, timezone
-from functools import lru_cache
 from typing import Annotated, Any
 
-import jwt
 import psycopg
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from jwt import PyJWKClient
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -23,6 +25,9 @@ from dotenv import load_dotenv
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(APP_DIR, ".env"))
 app = FastAPI(title="Pomodoro Matías Henquín", version="1.0.0")
+SESSION_COOKIE = "pomodoro_session"
+SESSION_SECONDS = 60 * 60 * 24 * 30
+_login_attempts: dict[str, list[float]] = {}
 
 
 class SessionInput(BaseModel):
@@ -55,11 +60,73 @@ class SessionInput(BaseModel):
         return self
 
 
-def config() -> dict[str, str | None]:
-    return {
-        "supabaseUrl": os.getenv("SUPABASE_URL"),
-        "supabaseAnonKey": os.getenv("SUPABASE_ANON_KEY"),
-    }
+class LoginInput(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+def _owner_id() -> str:
+    value = os.getenv("POMODORO_ALLOWED_USER_ID", "").strip()
+    if not value:
+        raise HTTPException(503, "Falta configurar el propietario de Pomodoro.")
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as exc:
+        raise HTTPException(503, "La configuración del propietario no es válida.") from exc
+
+
+def _session_secret() -> bytes:
+    secret = os.getenv("POMODORO_SESSION_SECRET", "").encode()
+    if len(secret) < 32:
+        raise HTTPException(503, "Falta configurar la clave privada de sesión.")
+    return secret
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _make_session(owner: str) -> str:
+    payload = _b64(json.dumps({"sub": owner, "exp": int(time.time()) + SESSION_SECONDS}, separators=(",", ":")).encode())
+    signature = _b64(hmac.new(_session_secret(), payload.encode(), hashlib.sha256).digest())
+    return f"{payload}.{signature}"
+
+
+def _session_owner(token: str | None) -> str:
+    if not token or "." not in token:
+        raise HTTPException(401, "Ingresá tu clave para continuar.")
+    payload, signature = token.rsplit(".", 1)
+    expected = _b64(hmac.new(_session_secret(), payload.encode(), hashlib.sha256).digest())
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(401, "La sesión no es válida. Ingresá tu clave nuevamente.")
+    try:
+        padded = payload + "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded))
+        owner = str(uuid.UUID(data["sub"]))
+        if owner != _owner_id() or int(data["exp"]) <= int(time.time()):
+            raise ValueError("expired or unauthorized")
+        return owner
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(401, "La sesión venció. Ingresá tu clave nuevamente.") from exc
+
+
+def _secure_request(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if origin:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+        host = request.headers.get("x-forwarded-host", request.url.netloc).split(",")[0].strip()
+        expected = f"{scheme}://{host}"
+        if not hmac.compare_digest(origin.rstrip("/"), expected.rstrip("/")):
+            raise HTTPException(403, "Origen no permitido.")
+
+
+def _is_https(request: Request) -> bool:
+    return request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip() == "https"
+
+
+def current_user(request: Request) -> str:
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        _secure_request(request)
+    return _session_owner(request.cookies.get(SESSION_COOKIE))
 
 
 def require_database() -> str:
@@ -77,44 +144,6 @@ def db_connection():
         raise
     except psycopg.Error as exc:
         raise HTTPException(503, "No se pudo conectar con la base de datos de Pomodoro.") from exc
-
-
-@lru_cache(maxsize=8)
-def jwks_client(url: str) -> PyJWKClient:
-    return PyJWKClient(url, cache_keys=True, lifespan=600, timeout=5)
-
-
-def current_user(authorization: Annotated[str | None, Header()] = None) -> str:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(401, "Iniciá sesión para continuar.", headers={"WWW-Authenticate": "Bearer"})
-    supabase_url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    allowed_user_id = os.getenv("POMODORO_ALLOWED_USER_ID", "").strip()
-    if not supabase_url or not allowed_user_id:
-        raise HTTPException(503, "Falta configurar el acceso personal de Pomodoro.")
-    token = authorization.split(" ", 1)[1].strip()
-    try:
-        issuer = f"{supabase_url}/auth/v1"
-        key = jwks_client(f"{issuer}/.well-known/jwks.json").get_signing_key_from_jwt(token).key
-        claims = jwt.decode(
-            token,
-            key,
-            algorithms=["ES256", "RS256", "EdDSA"],
-            audience="authenticated",
-            issuer=issuer,
-            options={"require": ["exp", "sub", "iss", "aud"]},
-            leeway=30,
-        )
-        user_id = str(uuid.UUID(claims["sub"]))
-        expected_id = str(uuid.UUID(allowed_user_id))
-        if user_id != expected_id:
-            raise HTTPException(403, "Esta cuenta no está autorizada para Pomodoro.")
-        return user_id
-    except HTTPException:
-        raise
-    except (jwt.PyJWTError, ValueError, KeyError) as exc:
-        raise HTTPException(401, "La sesión no es válida o venció.", headers={"WWW-Authenticate": "Bearer"}) from exc
-    except Exception as exc:
-        raise HTTPException(503, "No se pudo verificar la sesión con Supabase Auth.") from exc
 
 
 UserId = Annotated[str, Depends(current_user)]
@@ -170,15 +199,47 @@ def write_session(data: SessionInput, user_id: str, *, update_id: str | None = N
     return row_to_dict(row)
 
 
-@app.get("/api/config")
-def public_config():
-    """Only publishable Supabase client settings; never return database or service credentials."""
-    return config()
+@app.get("/api/auth/session")
+def auth_session(request: Request):
+    try:
+        _session_owner(request.cookies.get(SESSION_COOKIE))
+        return {"authenticated": True}
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return {"authenticated": False}
+        raise
+
+
+@app.post("/api/auth/login")
+def auth_login(data: LoginInput, request: Request, response: Response):
+    _secure_request(request)
+    client = request.client.host if request.client else "unknown"
+    now = time.time()
+    attempts = [stamp for stamp in _login_attempts.get(client, []) if now - stamp < 300]
+    if len(attempts) >= 8:
+        raise HTTPException(429, "Demasiados intentos. Esperá unos minutos y probá de nuevo.")
+    configured = os.getenv("POMODORO_ACCESS_PASSWORD", "")
+    if not configured or not hmac.compare_digest(data.password.encode(), configured.encode()):
+        attempts.append(now)
+        _login_attempts[client] = attempts
+        raise HTTPException(401, "La clave no es correcta.")
+    _login_attempts.pop(client, None)
+    response.set_cookie(SESSION_COOKIE, _make_session(_owner_id()), max_age=SESSION_SECONDS,
+                        httponly=True, secure=_is_https(request), samesite="strict", path="/")
+    return {"authenticated": True}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response, request: Request):
+    _secure_request(request)
+    response.delete_cookie(SESSION_COOKIE, httponly=True, secure=_is_https(request),
+                           samesite="strict", path="/")
+    return {"authenticated": False}
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "database_configured": bool(os.getenv("DATABASE_URL")), "auth_configured": bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY") and os.getenv("POMODORO_ALLOWED_USER_ID"))}
+    return {"ok": True, "database_configured": bool(os.getenv("DATABASE_URL")), "auth_configured": bool(os.getenv("POMODORO_ACCESS_PASSWORD") and os.getenv("POMODORO_SESSION_SECRET") and os.getenv("POMODORO_ALLOWED_USER_ID"))}
 
 
 @app.get("/api/sessions")

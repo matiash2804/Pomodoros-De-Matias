@@ -20,8 +20,8 @@
 
   <main id="inicio" class="page-shell">
     <section id="authPanel" class="auth-panel panel">
-      <div class="auth-copy"><p class="eyebrow">TU ESPACIO PERSONAL</p><h1>Un ciclo a la vez.</h1><p>Iniciá sesión con tu correo para sincronizar tus sesiones de estudio en todos tus dispositivos.</p></div>
-      <form id="loginForm" class="login-form"><label for="email">Correo electrónico</label><input id="email" type="email" autocomplete="email" placeholder="tu correo" required><button class="button button-gold" type="submit">Enviarme un enlace seguro</button><p id="loginMessage" class="form-message" role="status">El enlace de acceso llega a tu correo; no necesitás contraseña.</p></form>
+      <div class="auth-copy"><p class="eyebrow">TU ESPACIO PERSONAL</p><h1>Un ciclo a la vez.</h1><p>Ingresá tu clave personal. La sesión permanece abierta en este dispositivo y tus datos se sincronizan con tu base privada.</p></div>
+      <form id="loginForm" class="login-form"><label for="accessPassword">Clave personal</label><input id="accessPassword" type="password" autocomplete="current-password" placeholder="Tu clave de acceso" required><button id="loginButton" class="button button-gold" type="submit">Entrar a Pomodoro</button><p id="loginMessage" class="form-message" role="status"></p></form>
     </section>
 
     <div id="appShell" hidden>
@@ -57,6 +57,6 @@
   </main>
   <footer><span>Pomodoro · Matías Henquín</span><span>ENFOQUE · CONSTANCIA · PROGRESO</span></footer>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script><script src="/app.js" defer></script>
+  <script src="/app.js" defer></script>
 </body>
 </html>

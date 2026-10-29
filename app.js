@@ -2,7 +2,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { client: null, token: null, sessions: [], timer: null, timerTick: null, toastTick: null };
+const state = { authenticated: false, sessions: [], timer: null, timerTick: null, toastTick: null };
 const TIMER_KEY = "pomodoro_timer_v2";
 const PALETTE = ["#d6b467", "#b57753", "#a9a394", "#829879", "#b78c6a", "#777b76", "#d0c29d", "#956f58"];
 
@@ -12,7 +12,7 @@ async function initialize() {
   bindEvents();
   showToday();
   restoreTimer();
-  window.addEventListener("online", () => { refreshConnection(); if (state.token) flushCompletedCycle(); });
+  window.addEventListener("online", () => { refreshConnection(); if (state.authenticated) flushCompletedCycle(); });
   window.addEventListener("offline", refreshConnection);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) tickTimer(); });
   refreshConnection();
@@ -20,27 +20,11 @@ async function initialize() {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
   try {
-    const response = await fetch("/api/config", { cache: "no-store" });
-    if (!response.ok) throw new Error("La configuración del servidor no está disponible.");
-    const config = await response.json();
-    if (!config.supabaseUrl || !config.supabaseAnonKey || !window.supabase?.createClient) {
-      setConnection("error", "Falta configurar el acceso seguro");
-      setLoginMessage("El proyecto todavía no está conectado a Supabase.", "error");
-      return;
-    }
-    state.client = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-    });
-    const { data: { session } } = await state.client.auth.getSession();
-    state.token = session?.access_token || null;
-    renderAuth(session);
-    if (session) { await loadSessions(); await flushCompletedCycle(); }
-    state.client.auth.onAuthStateChange((_event, nextSession) => {
-      state.token = nextSession?.access_token || null;
-      renderAuth(nextSession);
-      if (nextSession) loadSessions().then(flushCompletedCycle);
-      else { state.sessions = []; renderAll(); }
-    });
+    const response = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
+    if (!response.ok) throw new Error("El servicio de acceso no está disponible.");
+    const data = await response.json();
+    setAuthenticated(Boolean(data.authenticated));
+    if (state.authenticated) { await loadSessions(); await flushCompletedCycle(); }
   } catch (error) {
     setConnection("error", "Servidor no disponible");
     setLoginMessage(error.message || "No se pudo conectar. Intentá de nuevo.", "error");
@@ -49,7 +33,7 @@ async function initialize() {
 
 function bindEvents() {
   $("loginForm").addEventListener("submit", handleLogin);
-  $("accountButton").addEventListener("click", async () => { await state.client?.auth.signOut(); });
+  $("accountButton").addEventListener("click", logout);
   $("sessionForm").addEventListener("submit", saveSession);
   $("clearForm").addEventListener("click", resetForm);
   $("sessionCycles").addEventListener("input", updateTotal);
@@ -71,18 +55,26 @@ function bindEvents() {
 
 async function handleLogin(event) {
   event.preventDefault();
-  if (!state.client) return setLoginMessage("El servicio de acceso todavía no está listo.", "error");
-  const email = $("email").value.trim();
-  setLoginMessage("Enviando el enlace seguro…");
-  const { error } = await state.client.auth.signInWithOtp({ email, options: { shouldCreateUser: false, emailRedirectTo: `${location.origin}/` } });
-  setLoginMessage(error ? error.message : "Listo. Revisá tu correo y abrí el enlace desde este dispositivo.", error ? "error" : "success");
+  const button = $("loginButton"); button.disabled = true; button.textContent = "Verificando…";
+  setLoginMessage("Verificando acceso…");
+  try {
+    const result = await fetch("/api/auth/login", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: $("accessPassword").value }) });
+    const payload = await result.json();
+    if (!result.ok) throw new Error(payload.detail || "No se pudo iniciar sesión.");
+    $("accessPassword").value = "";
+    setAuthenticated(true);
+    setLoginMessage("");
+    await loadSessions(); await flushCompletedCycle();
+  } catch (error) { setLoginMessage(error.message, "error"); }
+  finally { button.disabled = false; button.textContent = "Entrar a Pomodoro"; }
 }
 
-function renderAuth(session) {
-  $("authPanel").hidden = Boolean(session);
-  $("appShell").hidden = !session;
-  $("accountButton").hidden = !session;
-  if (!session) setConnection(navigator.onLine ? "online" : "offline", navigator.onLine ? "Conectado" : "Sin conexión");
+function setAuthenticated(authenticated) {
+  state.authenticated = authenticated;
+  $("authPanel").hidden = authenticated;
+  $("appShell").hidden = !authenticated;
+  $("accountButton").hidden = !authenticated;
+  if (!authenticated) setConnection(navigator.onLine ? "online" : "offline", navigator.onLine ? "Conexión disponible" : "Sin conexión");
 }
 
 function setLoginMessage(message, type = "") {
@@ -91,7 +83,7 @@ function setLoginMessage(message, type = "") {
 
 function refreshConnection() {
   if (!navigator.onLine) return setConnection("offline", "Sin conexión");
-  if (state.token) setConnection("online", "Conectado a tu cuenta");
+  if (state.authenticated) setConnection("online", "Sesión privada activa");
   else setConnection("", "Conexión disponible");
 }
 
@@ -100,13 +92,18 @@ function setConnection(mode, label) {
 }
 
 async function api(path, options = {}) {
-  if (!state.token) throw new Error("Iniciá sesión para continuar.");
-  const response = await fetch(path, { ...options, headers: { ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }), Authorization: `Bearer ${state.token}`, ...options.headers } });
-  if (response.status === 401) { await state.client?.auth.signOut(); throw new Error("La sesión venció. Volvé a ingresar."); }
+  if (!state.authenticated) throw new Error("Ingresá tu clave para continuar.");
+  const response = await fetch(path, { ...options, credentials: "same-origin", headers: { ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...options.headers } });
+  if (response.status === 401) { setAuthenticated(false); throw new Error("La sesión venció. Ingresá tu clave nuevamente."); }
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json() : null;
   if (!response.ok) throw new Error(payload?.detail || `No se pudo completar la operación (${response.status}).`);
   return payload;
+}
+
+async function logout() {
+  try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); }
+  finally { state.sessions = []; setAuthenticated(false); renderAll(); showToast("Sesión cerrada en este dispositivo."); }
 }
 
 async function loadSessions() {
@@ -280,7 +277,7 @@ function sumBy(records,keyFn,valueFn){const totals=new Map();records.forEach((it
 function rollingWeeks(records,count){const today=localDateString(),day=new Date(`${today}T12:00:00`).getDay(),mondayOffset=(day+6)%7;const thisMonday=shiftDate(today,-mondayOffset);return Array.from({length:count},(_,index)=>{const start=shiftDate(thisMonday,-7*(count-index-1)),end=shiftDate(start,6),minutes=records.filter((item)=>item.fecha>=start&&item.fecha<=end).reduce((sum,item)=>sum+item.total_minutos,0);return{label:new Intl.DateTimeFormat("es-AR",{day:"2-digit",month:"2-digit"}).format(new Date(`${start}T12:00:00`)),minutes};});}
 
 async function downloadExport(type){
-  try{const response=await fetch(`/api/export/${type}`,{headers:{Authorization:`Bearer ${state.token}`}});if(!response.ok){const err=await response.json();throw new Error(err.detail||"No se pudo generar la exportación.");}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=type==="csv"?"pomodoro-sesiones.csv":"pomodoro-sesiones.xlsx";link.click();URL.revokeObjectURL(url);}
+  try{const response=await fetch(`/api/export/${type}`,{credentials:"same-origin"});if(!response.ok){const err=await response.json();throw new Error(err.detail||"No se pudo generar la exportación.");}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=type==="csv"?"pomodoro-sesiones.csv":"pomodoro-sesiones.xlsx";link.click();URL.revokeObjectURL(url);}
   catch(error){showToast(error.message);}
 }
 
@@ -318,7 +315,7 @@ function handleTimerConfig(){
   persistTimer();renderTimer();
 }
 function startOrResumeTimer(){
-  if (!state.token) return showToast("Iniciá sesión para que el ciclo se guarde en tu historial.");
+  if (!state.authenticated) return showToast("Ingresá tu clave para guardar el ciclo en tu historial.");
   if($("timerSubject").value.trim().length<1)return showToast("Elegí una materia antes de empezar.");
   state.timer.config=timerConfig();state.timer.subject=$("timerSubject").value.trim();
   if(state.timer.phase==="work")state.timer.remainingMs=state.timer.remainingMs||state.timer.config.work*60000;
@@ -330,16 +327,16 @@ function tickTimer(){
   if(!state.timer?.running)return renderTimer();
   const remaining=state.timer.endsAt-Date.now();
   if(remaining<=0){const finishedPhase=state.timer.phase;
-    if(finishedPhase==="work"&&!state.token)return;
+    if(finishedPhase==="work"&&!state.authenticated)return;
     state.timer.running=false;delete state.timer.endsAt;
-    if(finishedPhase==="work"){const subject=state.timer.subject;const duration=state.timer.config.work;state.timer.cycle=(state.timer.cycle||0)+1;state.timer.phase=state.timer.cycle%4===0?"long":"short";state.timer.remainingMs=(state.timer.phase==="long"?state.timer.config.long:state.timer.config.short)*60000;if(subject)state.timer.pendingCompletion={id_estudio:crypto.randomUUID(),fecha:localDateString(),materia:subject,cantidad:1,tiempo:duration};persistTimer();renderTimer();if(subject&&state.token)flushCompletedCycle();else showToast("El ciclo terminó y quedó pendiente de sincronización.");}
+    if(finishedPhase==="work"){const subject=state.timer.subject;const duration=state.timer.config.work;state.timer.cycle=(state.timer.cycle||0)+1;state.timer.phase=state.timer.cycle%4===0?"long":"short";state.timer.remainingMs=(state.timer.phase==="long"?state.timer.config.long:state.timer.config.short)*60000;if(subject)state.timer.pendingCompletion={id_estudio:crypto.randomUUID(),fecha:localDateString(),materia:subject,cantidad:1,tiempo:duration};persistTimer();renderTimer();if(subject&&state.authenticated)flushCompletedCycle();else showToast("El ciclo se completó y espera que ingreses tu clave para sincronizarlo.");}
     else{state.timer.phase="work";state.timer.remainingMs=state.timer.config.work*60000;persistTimer();renderTimer();showToast("Descanso terminado. Cuando quieras, empezá otro ciclo.");}
     return;
   }
   state.timer.remainingMs=remaining;renderTimer();
 }
 async function flushCompletedCycle(){
-  if(!state.token||!state.timer?.pendingCompletion||state.flushingCompletion)return;
+  if(!state.authenticated||!state.timer?.pendingCompletion||state.flushingCompletion)return;
   state.flushingCompletion=true;
   try{const result=await api("/api/sessions",{method:"POST",body:JSON.stringify(state.timer.pendingCompletion)});state.sessions=[result.session,...state.sessions.filter((item)=>item.id_estudio!==result.session.id_estudio)];state.timer.pendingCompletion=null;persistTimer();renderAll();showToast("Ciclo completado y sincronizado con tu historial.");}
   catch(error){showToast(`El ciclo se completó; la sincronización se reintentará al volver la conexión. ${error.message}`);}

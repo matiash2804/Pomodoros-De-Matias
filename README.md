@@ -25,9 +25,9 @@ La portada abre en `http://127.0.0.1:8000`. Sin los valores de `.env`, el backen
 
 ## Configuración de Supabase
 
-Crear el proyecto nuevo `pomodoro-matias` en la misma cuenta, sin seleccionar ni reutilizar `control-diego`. Aplicar la migración `001_pomodoro_sessions.sql` solo en el proyecto nuevo. Deshabilitar el alta pública de usuarios y el acceso anónimo. Crear o invitar únicamente al usuario autorizado; `signInWithOtp` usa `shouldCreateUser=false`. Configurar `SUPABASE_URL`, `SUPABASE_ANON_KEY` (clave publicable), `DATABASE_URL` (pooler PostgreSQL con SSL) y `POMODORO_ALLOWED_USER_ID`. FastAPI verifica el JWT de Supabase y limita toda lectura y escritura al UID autorizado; la clave service-role no se usa.
+Crear y utilizar el proyecto nuevo `pomodoro-matias`, sin seleccionar ni reutilizar `Control Diego`. Aplicar la migración `001_pomodoro_sessions.sql` solo en el proyecto nuevo y mantener RLS activada. La aplicación no habilita Data API para el navegador ni usa Supabase Auth/OTP: el servidor se conecta a PostgreSQL con `DATABASE_URL` privado y limita todas las consultas al UID de `POMODORO_ALLOWED_USER_ID`. El acceso usa `POMODORO_ACCESS_PASSWORD` y una clave aleatoria `POMODORO_SESSION_SECRET`, guardadas solo como variables secretas del entorno. Las sesiones se conservan en cookies HttpOnly, Secure y SameSite Strict; el frontend nunca recibe credenciales de base de datos.
 
-La clave anon/publishable que la aplicación entrega al navegador es pública por diseño; RLS la limita al propietario. La URL de PostgreSQL y el UUID de propietario son variables del backend y no se devuelven al navegador. FastAPI verifica el JWT de Supabase y acepta solamente el UUID configurado. Cada consulta SQL filtra además por ese UUID.
+La URL de PostgreSQL y el UUID del propietario son variables exclusivas del backend y no se devuelven al navegador. El servidor valida la cookie privada y cada consulta SQL filtra además por el UUID configurado.
 
 ## Importación histórica
 
