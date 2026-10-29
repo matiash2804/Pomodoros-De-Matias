@@ -68,45 +68,62 @@ class ApiGuardTests(unittest.TestCase):
         self.assertFalse(response.json()["database_configured"])
 
 
+class FakeResult:
+    def __init__(self, row=None, rowcount=1):
+        self.row = row
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        return self.row
+
+    def fetchall(self):
+        return [self.row] if self.row else []
+
+
+class FakeConnection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, query, params=()):
+        now = datetime.now(timezone.utc)
+        if query.lstrip().startswith("UPDATE"):
+            row = (params[6], params[0], params[1], params[2], params[3], params[2] * params[3], now, now)
+            return FakeResult(row)
+        if query.lstrip().startswith("INSERT"):
+            row = (params[0], params[2], params[3], params[4], params[5], params[4] * params[5], params[6], params[7])
+            return FakeResult(row)
+        if query.lstrip().startswith("DELETE"):
+            return FakeResult(rowcount=1)
+        if "SELECT id_estudio" in query:
+            return FakeResult(("Est-test", date(2026, 1, 2), "Cálculo 1", 1, 25, 25, now, now))
+        return FakeResult()
+
+
 class CrudRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(server.app)
         server.app.dependency_overrides[server.current_user] = lambda: "9b3095b1-d97e-47b4-80be-79325b8f77cb"
-        now = datetime.now(timezone.utc).isoformat()
-        self.record = {"id_estudio": "Est-test", "fecha": "2026-01-02", "materia": "Cálculo 1",
-                       "cantidad": 2, "tiempo": 25, "total_minutos": 50, "created_at": now, "updated_at": now}
-        self.rest_patch = patch("server.rest_request", side_effect=self.fake_rest)
-        self.rest_patch.start()
-
-    def fake_rest(self, method, path, bearer, *, params=None, json=None, prefer=None):
-        if method == "GET":
-            return [self.record]
-        if method == "POST":
-            self.record.update(json)
-            self.record["total_minutos"] = self.record["cantidad"] * self.record["tiempo"]
-            return [self.record]
-        if method == "PATCH":
-            self.record.update(json)
-            self.record["total_minutos"] = self.record["cantidad"] * self.record["tiempo"]
-            return [self.record]
-        return [self.record]
+        self.db_patch = patch("server.db_connection", return_value=FakeConnection())
+        self.db_patch.start()
 
     def tearDown(self):
-        self.rest_patch.stop()
+        self.db_patch.stop()
         server.app.dependency_overrides.clear()
 
     def test_create_update_delete_and_export(self):
         payload = {"fecha": "2026-01-02", "materia": "Cálculo 1", "cantidad": 2, "tiempo": 25}
-        headers = {"Authorization": "Bearer mock-token"}
-        created = self.client.post("/api/sessions", json=payload, headers=headers)
+        created = self.client.post("/api/sessions", json=payload)
         self.assertEqual(created.status_code, 201)
         record_id = created.json()["session"]["id_estudio"]
         self.assertEqual(created.json()["session"]["total_minutos"], 50)
-        updated = self.client.put(f"/api/sessions/{record_id}", json={**payload, "cantidad": 3}, headers=headers)
+        updated = self.client.put(f"/api/sessions/{record_id}", json={**payload, "cantidad": 3})
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["session"]["total_minutos"], 75)
-        self.assertEqual(self.client.delete(f"/api/sessions/{record_id}", headers=headers).status_code, 204)
-        xlsx = self.client.get("/api/export/xlsx", headers=headers)
+        self.assertEqual(self.client.delete(f"/api/sessions/{record_id}").status_code, 204)
+        xlsx = self.client.get("/api/export/xlsx")
         self.assertEqual(xlsx.status_code, 200)
         self.assertTrue(xlsx.content.startswith(b"PK"))
 

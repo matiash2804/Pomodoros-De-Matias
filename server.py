@@ -11,7 +11,7 @@ from functools import lru_cache
 from typing import Annotated, Any
 
 import jwt
-import httpx
+import psycopg
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from jwt import PyJWKClient
@@ -62,29 +62,21 @@ def config() -> dict[str, str | None]:
     }
 
 
-def rest_request(method: str, path: str, bearer: str, *, params=None, json=None, prefer=None):
-    base = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-    key = os.getenv("SUPABASE_ANON_KEY", "")
-    if not base or not key:
-        raise HTTPException(503, "Falta configurar la conexión al proyecto Supabase de Pomodoro.")
-    headers = {"apikey": key, "Authorization": f"Bearer {bearer}", "Accept": "application/json"}
-    if json is not None:
-        headers["Content-Type"] = "application/json"
-    if prefer:
-        headers["Prefer"] = prefer
+def require_database() -> str:
+    dsn = os.getenv("DATABASE_URL", "").strip()
+    if not dsn:
+        raise HTTPException(503, "La base PostgreSQL todavía no está configurada.")
+    return dsn
+
+
+def db_connection():
     try:
-        response = httpx.request(method, f"{base}/rest/v1/{path}", headers=headers, params=params,
-                                 json=json, timeout=15.0)
-    except httpx.HTTPError as exc:
-        raise HTTPException(503, "No se pudo contactar la base PostgreSQL de Pomodoro.") from exc
-    if response.status_code >= 400:
-        detail = "La base PostgreSQL rechazó la operación."
-        try:
-            detail = response.json().get("message", detail)
-        except (ValueError, AttributeError):
-            pass
-        raise HTTPException(409 if response.status_code == 409 else 503, detail)
-    return response.json() if response.content else []
+        return psycopg.connect(require_database(), connect_timeout=8, application_name="pomodoro-matias",
+                               prepare_threshold=None, sslmode="require")
+    except HTTPException:
+        raise
+    except psycopg.Error as exc:
+        raise HTTPException(503, "No se pudo conectar con la base de datos de Pomodoro.") from exc
 
 
 @lru_cache(maxsize=8)
@@ -128,30 +120,54 @@ def current_user(authorization: Annotated[str | None, Header()] = None) -> str:
 UserId = Annotated[str, Depends(current_user)]
 
 
-def get_sessions(user_id: str, token: str) -> list[dict[str, Any]]:
-    return rest_request("GET", "pomodoro_sessions", token, params={
-        "select": "id_estudio,fecha,materia,cantidad,tiempo,total_minutos,created_at,updated_at",
-        "user_id": f"eq.{user_id}", "order": "fecha.desc,created_at.desc,id_estudio",
-        "limit": "10000",
-    })
+def row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id_estudio": row[0], "fecha": row[1].isoformat(), "materia": row[2],
+        "cantidad": row[3], "tiempo": row[4], "total_minutos": row[5],
+        "created_at": row[6].isoformat() if row[6] else None,
+        "updated_at": row[7].isoformat() if row[7] else None,
+    }
 
 
-def write_session(data: SessionInput, user_id: str, token: str, *, update_id: str | None = None) -> dict[str, Any]:
+def get_sessions(user_id: str) -> list[dict[str, Any]]:
+    with db_connection() as connection:
+        rows = connection.execute(
+            """SELECT id_estudio, fecha, materia, cantidad, tiempo, total_minutos, created_at, updated_at
+               FROM public.pomodoro_sessions WHERE user_id = %s ORDER BY fecha DESC, created_at DESC, id_estudio""",
+            (user_id,),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def write_session(data: SessionInput, user_id: str, *, update_id: str | None = None) -> dict[str, Any]:
     record_id = update_id or data.id_estudio or str(uuid.uuid4())
-    payload = {"id_estudio": record_id, "user_id": user_id, "fecha": data.fecha.isoformat(),
-               "materia": data.materia, "cantidad": data.cantidad, "tiempo": data.tiempo}
-    if update_id:
-        rows = rest_request("PATCH", "pomodoro_sessions", token,
-                            params={"id_estudio": f"eq.{update_id}", "user_id": f"eq.{user_id}",
-                                    "select": "id_estudio,fecha,materia,cantidad,tiempo,total_minutos,created_at,updated_at"},
-                            json=payload, prefer="return=representation")
-    else:
-        rows = rest_request("POST", "pomodoro_sessions", token,
-                            params={"on_conflict": "id_estudio", "select": "id_estudio,fecha,materia,cantidad,tiempo,total_minutos,created_at,updated_at"},
-                            json=payload, prefer="resolution=merge-duplicates,return=representation")
-    if not rows:
-        raise HTTPException(404 if update_id else 409, "No se encontró la sesión o no se pudo guardar.")
-    return rows[0]
+    now = datetime.now(timezone.utc)
+    values = (record_id, user_id, data.fecha, data.materia, data.cantidad, data.tiempo, now)
+    with db_connection() as connection:
+        if update_id:
+            row = connection.execute(
+                """UPDATE public.pomodoro_sessions SET fecha=%s,materia=%s,cantidad=%s,tiempo=%s,
+                   updated_at=%s WHERE id_estudio=%s AND user_id=%s
+                   RETURNING id_estudio,fecha,materia,cantidad,tiempo,total_minutos,created_at,updated_at""",
+                (data.fecha, data.materia, data.cantidad, data.tiempo, now, update_id, user_id),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "No se encontró esa sesión.")
+        else:
+            row = connection.execute(
+                """INSERT INTO public.pomodoro_sessions
+                   (id_estudio,user_id,fecha,materia,cantidad,tiempo,created_at,updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (id_estudio) DO UPDATE SET fecha=EXCLUDED.fecha,materia=EXCLUDED.materia,
+                     cantidad=EXCLUDED.cantidad,tiempo=EXCLUDED.tiempo,
+                     updated_at=EXCLUDED.updated_at
+                   WHERE public.pomodoro_sessions.user_id=EXCLUDED.user_id
+                   RETURNING id_estudio,fecha,materia,cantidad,tiempo,total_minutos,created_at,updated_at""",
+                values + (now,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(409, "Ese identificador ya pertenece a otra cuenta.")
+    return row_to_dict(row)
 
 
 @app.get("/api/config")
@@ -162,64 +178,78 @@ def public_config():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "database_configured": bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY")), "auth_configured": bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY") and os.getenv("POMODORO_ALLOWED_USER_ID"))}
+    return {"ok": True, "database_configured": bool(os.getenv("DATABASE_URL")), "auth_configured": bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY") and os.getenv("POMODORO_ALLOWED_USER_ID"))}
 
 
 @app.get("/api/sessions")
-def list_sessions(user_id: UserId, authorization: Annotated[str, Header()]):
-    return {"sessions": get_sessions(user_id, authorization.split(" ", 1)[1])}
+def list_sessions(user_id: UserId):
+    return {"sessions": get_sessions(user_id)}
 
 
 @app.post("/api/sessions", status_code=201)
-def create_session(data: SessionInput, user_id: UserId, authorization: Annotated[str, Header()]):
-    record = write_session(data, user_id, authorization.split(" ", 1)[1])
+def create_session(data: SessionInput, user_id: UserId):
+    record = write_session(data, user_id)
     return {"session": record}
 
 
 @app.put("/api/sessions/{session_id}")
-def update_session(session_id: str, data: SessionInput, user_id: UserId, authorization: Annotated[str, Header()]):
-    return {"session": write_session(data, user_id, authorization.split(" ", 1)[1], update_id=session_id)}
+def update_session(session_id: str, data: SessionInput, user_id: UserId):
+    return {"session": write_session(data, user_id, update_id=session_id)}
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204)
-def delete_session(session_id: str, user_id: UserId, authorization: Annotated[str, Header()]):
-    rows = rest_request("DELETE", "pomodoro_sessions", authorization.split(" ", 1)[1],
-                        params={"id_estudio": f"eq.{session_id}", "user_id": f"eq.{user_id}"},
-                        prefer="return=representation")
-    if not rows:
-        raise HTTPException(404, "No se encontró esa sesión.")
+def delete_session(session_id: str, user_id: UserId):
+    with db_connection() as connection:
+        result = connection.execute(
+            "DELETE FROM public.pomodoro_sessions WHERE id_estudio=%s AND user_id=%s", (session_id, user_id)
+        )
+        if result.rowcount == 0:
+            raise HTTPException(404, "No se encontró esa sesión.")
     return JSONResponse(status_code=204, content=None)
 
 
 @app.get("/api/subjects")
-def list_subjects(user_id: UserId, authorization: Annotated[str, Header()]):
-    records = get_sessions(user_id, authorization.split(" ", 1)[1])
-    return {"subjects": sorted({item["materia"] for item in records})}
+def list_subjects(user_id: UserId):
+    with db_connection() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT materia FROM public.pomodoro_sessions WHERE user_id=%s ORDER BY materia", (user_id,)
+        ).fetchall()
+    return {"subjects": [row[0] for row in rows]}
 
 
 @app.get("/api/statistics")
-def statistics(user_id: UserId, authorization: Annotated[str, Header()]):
-    records = get_sessions(user_id, authorization.split(" ", 1)[1])
-    subjects, days, weeks, months = {}, {}, {}, {}
-    for item in records:
-        day = date.fromisoformat(item["fecha"])
-        minutes = item["total_minutos"]
-        subjects[item["materia"]] = subjects.get(item["materia"], 0) + minutes
-        days[day] = days.get(day, 0) + minutes
-        week = day.fromordinal(day.toordinal() - day.weekday())
-        month = day.replace(day=1)
-        weeks[week] = weeks.get(week, 0) + minutes
-        months[month] = months.get(month, 0) + minutes
-    total_minutes = sum(item["total_minutos"] for item in records)
+def statistics(user_id: UserId):
+    with db_connection() as connection:
+        totals = connection.execute(
+            """SELECT count(*), coalesce(sum(total_minutos),0), coalesce(sum(cantidad),0),
+                      count(distinct materia), min(fecha), max(fecha)
+               FROM public.pomodoro_sessions WHERE user_id=%s""", (user_id,)
+        ).fetchone()
+        subjects = connection.execute(
+            """SELECT materia, sum(total_minutos)::integer AS total_minutos
+               FROM public.pomodoro_sessions WHERE user_id=%s
+               GROUP BY materia ORDER BY total_minutos DESC, materia""", (user_id,)
+        ).fetchall()
+        days = connection.execute(
+            """SELECT fecha, sum(total_minutos)::integer AS total_minutos
+               FROM public.pomodoro_sessions WHERE user_id=%s GROUP BY fecha ORDER BY fecha""", (user_id,)
+        ).fetchall()
+        weeks = connection.execute(
+            """SELECT date_trunc('week', fecha)::date AS semana, sum(total_minutos)::integer AS total_minutos
+               FROM public.pomodoro_sessions WHERE user_id=%s GROUP BY 1 ORDER BY 1""", (user_id,)
+        ).fetchall()
+        months = connection.execute(
+            """SELECT date_trunc('month', fecha)::date AS mes, sum(total_minutos)::integer AS total_minutos
+               FROM public.pomodoro_sessions WHERE user_id=%s GROUP BY 1 ORDER BY 1""", (user_id,)
+        ).fetchall()
     return {
-        "session_count": len(records), "total_minutos": total_minutes,
-        "ciclos": sum(item["cantidad"] for item in records), "materias": len(subjects),
-        "primera_fecha": min((item["fecha"] for item in records), default=None),
-        "ultima_fecha": max((item["fecha"] for item in records), default=None),
-        "por_materia": [{"materia": name, "total_minutos": value} for name, value in sorted(subjects.items(), key=lambda pair: (-pair[1], pair[0]))],
-        "por_dia": [{"fecha": day.isoformat(), "total_minutos": value} for day, value in sorted(days.items())],
-        "por_semana": [{"fecha": day.isoformat(), "total_minutos": value} for day, value in sorted(weeks.items())],
-        "por_mes": [{"fecha": day.isoformat(), "total_minutos": value} for day, value in sorted(months.items())],
+        "session_count": totals[0], "total_minutos": totals[1], "ciclos": totals[2],
+        "materias": totals[3], "primera_fecha": totals[4].isoformat() if totals[4] else None,
+        "ultima_fecha": totals[5].isoformat() if totals[5] else None,
+        "por_materia": [{"materia": row[0], "total_minutos": row[1]} for row in subjects],
+        "por_dia": [{"fecha": row[0].isoformat(), "total_minutos": row[1]} for row in days],
+        "por_semana": [{"fecha": row[0].isoformat(), "total_minutos": row[1]} for row in weeks],
+        "por_mes": [{"fecha": row[0].isoformat(), "total_minutos": row[1]} for row in months],
     }
 
 
@@ -277,25 +307,34 @@ def csv_rows(file_bytes: bytes) -> tuple[list[dict[str, Any]], int]:
 
 
 @app.post("/api/import/csv")
-async def import_csv(user_id: UserId, authorization: Annotated[str, Header()], file: UploadFile = File(...)):
+async def import_csv(user_id: UserId, file: UploadFile = File(...)):
     raw = await file.read(5_000_001)
     if len(raw) > 5_000_000:
         raise HTTPException(413, "El archivo supera 5 MB.")
     records, rejected = csv_rows(raw)
-    token = authorization.split(" ", 1)[1]
-    before = {item["id_estudio"] for item in get_sessions(user_id, token)}
-    payload = [{**item, "fecha": item["fecha"].isoformat(), "user_id": user_id} for item in records]
-    if payload:
-        rest_request("POST", "pomodoro_sessions", token, params={"on_conflict": "id_estudio"},
-                     json=payload, prefer="resolution=merge-duplicates,return=minimal")
-    updated = sum(item["id_estudio"] in before for item in records)
-    imported = len(records) - updated
+    imported = updated = rejected = 0
+    with db_connection() as connection:
+        for item in records:
+            previous = connection.execute("SELECT 1 FROM public.pomodoro_sessions WHERE id_estudio=%s AND user_id=%s", (item["id_estudio"], user_id)).fetchone()
+            result = connection.execute(
+                """INSERT INTO public.pomodoro_sessions (id_estudio,user_id,fecha,materia,cantidad,tiempo)
+                   VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(id_estudio) DO UPDATE SET
+                   fecha=EXCLUDED.fecha,materia=EXCLUDED.materia,cantidad=EXCLUDED.cantidad,tiempo=EXCLUDED.tiempo,
+                   updated_at=now()
+                   WHERE public.pomodoro_sessions.user_id=EXCLUDED.user_id""",
+                (item["id_estudio"], user_id, item["fecha"], item["materia"], item["cantidad"], item["tiempo"]),
+            )
+            if connection.execute("SELECT 1 FROM public.pomodoro_sessions WHERE id_estudio=%s AND user_id=%s", (item["id_estudio"], user_id)).fetchone():
+                updated += int(previous is not None)
+                imported += int(previous is None)
+            else:
+                rejected += 1
     return {"imported": imported, "updated": updated, "rejected": rejected, "received": imported + updated + rejected}
 
 
 @app.get("/api/export/csv")
-def export_csv(user_id: UserId, authorization: Annotated[str, Header()]):
-    records = get_sessions(user_id, authorization.split(" ", 1)[1])
+def export_csv(user_id: UserId):
+    records = get_sessions(user_id)
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(["IDEstudio", "Fecha", "Materia", "Cantidad", "Tiempo (min)", "Total minutos"])
@@ -306,8 +345,8 @@ def export_csv(user_id: UserId, authorization: Annotated[str, Header()]):
 
 
 @app.get("/api/export/xlsx")
-def export_xlsx(user_id: UserId, authorization: Annotated[str, Header()]):
-    records = get_sessions(user_id, authorization.split(" ", 1)[1])
+def export_xlsx(user_id: UserId):
+    records = get_sessions(user_id)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Sesiones"
