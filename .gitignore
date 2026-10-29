@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.vercel
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backups/
+node_modules/
+*.log
+Control de horas de estudio (Copia 1) - Hoja 1.csv

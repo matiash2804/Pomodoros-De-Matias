@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "Pomodoro Matías Henquín",
+  "short_name": "Pomodoro MH",
+  "description": "Tu espacio personal para estudiar con intención.",
+  "lang": "es-AR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0d0c",
+  "theme_color": "#10100f",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

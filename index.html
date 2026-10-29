@@ -1,107 +1,62 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-    <link rel="icon" type="image/png" href="https://st5.depositphotos.com/39247644/79616/p/450/depositphotos_796163262-stock-photo-modern-sleek-vibrant-red-wall.png">
-<link rel="apple-touch-icon" href="https://st5.depositphotos.com/39247644/79616/p/450/depositphotos_796163262-stock-photo-modern-sleek-vibrant-red-wall.png">
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pomodoro Matute</title>
-  <link rel="stylesheet" href="googleviejo.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10100f">
+  <meta name="description" content="Pomodoro personal de Matías Henquín: registra sesiones, enfócate y sigue tu progreso.">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <title>Pomodoro · Matías Henquín</title>
 </head>
 <body>
-  <div class="ambient ambient-one"></div>
-  <div class="ambient ambient-two"></div>
-
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
   <header class="topbar">
-  <div class="brand-title">
-    <img
-      src="https://st5.depositphotos.com/39247644/79616/p/450/depositphotos_796163262-stock-photo-modern-sleek-vibrant-red-wall.png"
-      alt="Logo Pomodoro"
-      class="brand-logo"
-    >
-    <h1>Pomodoro Matías Henquín</h1>
-  </div>
-    <div id="syncStatus" class="sync-status cache" role="status">
-      <span class="status-orb"></span>
-      <span id="syncStatusText">Trabajando con cache</span>
-    </div>
+    <a class="brand" href="#inicio" aria-label="Pomodoro Matías Henquín, inicio"><span class="brand-mark">P</span><span><strong>MATÍAS HENQUÍN</strong><small>ESTUDIO CON INTENCIÓN</small></span></a>
+    <nav aria-label="Navegación principal"><a href="#resumen">Resumen</a><a href="#temporizador">Temporizador</a><a href="#historial">Historial</a></nav>
+    <div class="account-area"><span id="connection" class="connection"><i></i><span>Comprobando conexión</span></span><button id="accountButton" class="text-button" type="button" hidden>Cerrar sesión</button></div>
   </header>
 
-  <main class="dashboard">
-    <aside class="panel form-panel">
-      <div class="panel-heading">
-        <p class="eyebrow">Nuevo registro</p>
-        <h2 id="formTitle">Sesion de enfoque</h2>
-      </div>
-
-      <form id="studyForm">
-        <input type="hidden" id="idEstudio">
-        <div class="form-group">
-          <label for="fecha">Fecha</label>
-          <input type="date" id="fecha" required>
-        </div>
-        <div class="form-group">
-          <label for="materia">Materia</label>
-          <input type="text" id="materia" list="materiasList" placeholder="Ej: Calculo 1" autocomplete="off" required>
-          <datalist id="materiasList"></datalist>
-        </div>
-        <div class="form-grid">
-          <div class="form-group">
-            <label for="cantidad">Cantidad</label>
-            <input type="number" id="cantidad" min="1" step="1" value="1" required>
-          </div>
-          <div class="form-group">
-            <label for="tiempo">Tiempo</label>
-            <input type="number" id="tiempo" min="1" step="1" value="25" required>
-          </div>
-        </div>
-        <p class="total-preview"><span>Total previsto</span><strong id="totalPreview">25 min</strong></p>
-        <div class="button-row">
-          <button type="submit" id="saveButton">Guardar</button>
-          <button type="button" id="newButton" class="secondary">Nuevo</button>
-        </div>
-      </form>
-
-    </aside>
-
-    <section class="content">
-      <section class="summary">
-        <div>
-          <h2>Materias estudiadas</h2>
-        </div>
-        <p id="recordCount" class="record-count">0 registros</p>
-      </section>
-
-      <div id="flashcards" class="flashcard-grid"></div>
-
-      <section class="panel history-panel">
-        <div class="panel-heading history-heading">
-          <div>
-            <h2>Historial registrado</h2>
-          </div>
-          <button type="button" id="retryButton" class="small secondary">Reintentar sync</button>
-        </div>
-
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>Materia</th>
-                <th>Cant.</th>
-                <th>Tiempo</th>
-                <th>Total</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody id="tableBody"></tbody>
-          </table>
-          <p id="emptyState" class="empty-state">Todavia no hay sesiones registradas.</p>
-        </div>
-      </section>
+  <main id="inicio" class="page-shell">
+    <section id="authPanel" class="auth-panel panel">
+      <div class="auth-copy"><p class="eyebrow">TU ESPACIO PERSONAL</p><h1>Un ciclo a la vez.</h1><p>Iniciá sesión con tu correo para sincronizar tus sesiones de estudio en todos tus dispositivos.</p></div>
+      <form id="loginForm" class="login-form"><label for="email">Correo electrónico</label><input id="email" type="email" autocomplete="email" placeholder="tu correo" required><button class="button button-gold" type="submit">Enviarme un enlace seguro</button><p id="loginMessage" class="form-message" role="status">El enlace de acceso llega a tu correo; no necesitás contraseña.</p></form>
     </section>
-  </main>
 
-  <script src="app.js"></script>
+    <div id="appShell" hidden>
+      <section class="welcome-row"><div><p class="eyebrow">TU RITMO, TUS DATOS</p><h1>Buenas, Matías<span class="gold-dot">.</span></h1><p class="muted">Cada sesión cuenta. Mirá lo que construiste.</p></div><div class="today-chip"><span class="today-icon">✦</span><span><small>HOY</small><strong id="todayLabel">—</strong></span></div></section>
+
+      <section id="resumen" class="metrics-grid" aria-label="Estadísticas principales">
+        <article class="metric-card"><span class="metric-label">TIEMPO TOTAL</span><strong id="totalHours" class="metric-value">—</strong><span id="totalMinutes" class="metric-note">minutos registrados</span></article>
+        <article class="metric-card"><span class="metric-label">SESIONES</span><strong id="sessionCount" class="metric-value">—</strong><span class="metric-note">bloques registrados</span></article>
+        <article class="metric-card"><span class="metric-label">CICLOS COMPLETADOS</span><strong id="cycleCount" class="metric-value">—</strong><span class="metric-note">pomodoros de estudio</span></article>
+        <article class="metric-card"><span class="metric-label">RACHA ACTUAL</span><strong id="streakCount" class="metric-value">—</strong><span class="metric-note">días consecutivos</span></article>
+      </section>
+
+      <section class="overview-grid">
+        <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">CONSTANCIA</p><h2>Tu evolución</h2></div><select id="trendRange" aria-label="Rango del gráfico"><option value="14">14 días</option><option value="30" selected>30 días</option><option value="90">90 días</option></select></div><div id="trendChart" class="chart-area" role="img" aria-label="Horas estudiadas por día"></div><div class="chart-foot"><span><i class="legend-dot gold"></i>Horas por día</span><strong id="weeklyAverage">Promedio semanal: —</strong></div></article>
+        <article class="panel subject-panel"><div class="panel-heading"><div><p class="eyebrow">DEDICACIÓN</p><h2>Por materia</h2></div><span class="tiny-label">ACUMULADO</span></div><div id="subjectChart" class="subject-chart"></div><div id="subjectLegend" class="subject-legend"></div></article>
+      </section>
+
+      <section class="mini-charts" aria-label="Comparativas de tiempo">
+        <article class="panel mini-chart-panel"><div class="panel-heading"><div><p class="eyebrow">CONSTANCIA</p><h2>Ritmo semanal</h2></div><span class="tiny-label">12 SEMANAS</span></div><div id="weekChart" class="mini-chart" role="img" aria-label="Horas estudiadas por semana"></div></article>
+        <article class="panel mini-chart-panel"><div class="panel-heading"><div><p class="eyebrow">PERSPECTIVA</p><h2>Comparación mensual</h2></div><span class="tiny-label">6 MESES</span></div><div id="monthChart" class="mini-chart" role="img" aria-label="Horas estudiadas por mes"></div></article>
+      </section>
+
+      <section id="temporizador" class="workbench-grid">
+        <article class="panel timer-panel"><div class="panel-heading"><div><p class="eyebrow">MODO CONCENTRACIÓN</p><h2>Temporizador</h2></div><span id="timerPhase" class="phase-pill">ENFOQUE</span></div><label for="timerSubject">Materia</label><input id="timerSubject" list="subjects" placeholder="Elegí o escribí una materia" autocomplete="off"><div class="timer-face"><svg viewBox="0 0 220 220" aria-hidden="true"><circle class="timer-track" cx="110" cy="110" r="99"></circle><circle id="timerProgress" class="timer-progress" cx="110" cy="110" r="99"></circle></svg><div class="timer-readout"><strong id="timerClock">25:00</strong><span id="timerCaption">LISTA PARA EMPEZAR</span></div></div><div class="timer-config"><label>Trabajo <input id="workMinutes" type="number" min="1" max="180" value="25" inputmode="numeric"></label><label>Descanso corto <input id="shortBreak" type="number" min="1" max="60" value="5" inputmode="numeric"></label><label>Descanso largo <input id="longBreak" type="number" min="1" max="90" value="15" inputmode="numeric"></label></div><div class="timer-actions"><button id="timerStart" class="button button-gold" type="button">Iniciar enfoque</button><button id="timerPause" class="button button-quiet" type="button" hidden>Pausar</button><button id="timerReset" class="button button-quiet" type="button">Reiniciar</button></div><p class="timer-hint">El ciclo se registra al completarse. Las pausas no cuentan como estudio.</p></article>
+
+        <article id="registro" class="panel entry-panel"><div class="panel-heading"><div><p class="eyebrow">REGISTRO MANUAL</p><h2 id="formHeading">Nueva sesión</h2></div><button id="clearForm" class="text-button" type="button">Limpiar</button></div><form id="sessionForm"><input id="sessionId" type="hidden"><label for="sessionDate">Fecha</label><input id="sessionDate" type="date" required><label for="sessionSubject">Materia</label><input id="sessionSubject" list="subjects" placeholder="Ej. Cálculo 1" autocomplete="off" maxlength="120" required><datalist id="subjects"></datalist><div class="two-fields"><div><label for="sessionCycles">Cantidad de ciclos</label><input id="sessionCycles" type="number" min="1" max="100" value="1" required></div><div><label for="sessionDuration">Minutos por ciclo</label><input id="sessionDuration" type="number" min="1" max="600" value="25" required></div></div><div class="total-box"><span>Tiempo total</span><strong id="sessionTotal">25 min</strong></div><button id="saveSession" class="button button-gold full-width" type="submit">Guardar sesión</button><p id="saveMessage" class="form-message" role="status"></p></form></article>
+      </section>
+
+      <section class="insight-grid"><article class="insight-card"><span>ASIGNATURA PRINCIPAL</span><strong id="topSubject">—</strong><small id="topSubjectTime">Todavía sin sesiones</small></article><article class="insight-card"><span>PROMEDIO DIARIO</span><strong id="dailyAverage">—</strong><small>desde tu primer registro</small></article><article class="insight-card"><span>ESTE MES</span><strong id="monthTotal">—</strong><small id="monthComparison">tiempo acumulado</small></article><article class="insight-card"><span>MEJOR SEMANA</span><strong id="bestWeek">—</strong><small>horas de estudio</small></article></section>
+
+      <section id="historial" class="panel history-panel"><div class="panel-heading history-head"><div><p class="eyebrow">TUS REGISTROS</p><h2>Historial de estudio</h2></div><div class="export-actions"><button id="importCsv" class="button button-quiet" type="button">Importar CSV</button><input id="csvFile" type="file" accept=".csv,text/csv" hidden><button id="exportCsv" class="button button-quiet" type="button">Exportar CSV</button><button id="exportXlsx" class="button button-quiet" type="button">Exportar Excel</button></div></div><div class="filters"><input id="searchSessions" type="search" placeholder="Buscar por materia…" aria-label="Buscar sesiones"><label>Desde <input id="filterFrom" type="date"></label><label>Hasta <input id="filterTo" type="date"></label><select id="sortSessions" aria-label="Ordenar sesiones"><option value="newest">Más recientes</option><option value="oldest">Más antiguas</option><option value="longest">Más tiempo</option><option value="subject">Materia A–Z</option></select></div><div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Materia</th><th>Ciclos</th><th>Min/ciclo</th><th>Total</th><th>Acciones</th></tr></thead><tbody id="sessionsBody"></tbody></table><div id="emptyHistory" class="empty-history" hidden><span>✦</span><strong>Sin sesiones para mostrar</strong><small>Registrá una sesión o ajustá los filtros.</small></div></div><div class="history-foot"><span id="visibleCount">0 sesiones</span><span>Los datos se guardan en tu base personal.</span></div></section>
+    </div>
+  </main>
+  <footer><span>Pomodoro · Matías Henquín</span><span>ENFOQUE · CONSTANCIA · PROGRESO</span></footer>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script><script src="/app.js" defer></script>
 </body>
 </html>
